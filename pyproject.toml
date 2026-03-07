@@ -1,0 +1,61 @@
+[project]
+name = "testmind"
+version = "0.1.0"
+description = "CLI tool to ingest test reports, detect flaky/regression patterns, and predict failures."
+readme = "README.md"
+requires-python = ">=3.13"
+license = { text = "MIT" }
+authors = [
+    { name = "TestMind Contributors" },
+]
+keywords = [
+    "testing",
+    "test-reports",
+    "junit",
+    "pytest",
+    "flaky-tests",
+    "regression",
+    "ci",
+    "quality",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Testing",
+    "Topic :: Utilities",
+]
+dependencies = [
+    "beautifulsoup4>=4.12",
+    "pydantic>=2.12.5",
+    "typer>=0.23.1",
+]
+
+[project.urls]
+Homepage = "https://github.com/testmind/testmind"
+Repository = "https://github.com/testmind/testmind"
+"Bug Tracker" = "https://github.com/testmind/testmind/issues"
+
+[project.scripts]
+testmind = "testmind.cli.app:app"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=6.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::pytest.PytestCollectionWarning"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/testmind"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
