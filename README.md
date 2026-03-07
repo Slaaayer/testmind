@@ -11,18 +11,36 @@ other formats.
 
 ## Installation
 
-```bash
-# Clone and install in editable mode
-git clone <repo>
-cd testmind
-uv sync          # installs all dependencies + the testmind CLI
-```
+### CLI tool (recommended)
 
-The `testmind` command is registered as a script entry point and is available
-immediately after installation.
+```bash
+# With uv (recommended)
+uv tool install testmind
+
+# With pip
+pip install testmind
+```
 
 ```bash
 testmind --help
+```
+
+### As a library in your project
+
+```bash
+# With uv
+uv add testmind
+
+# With pip
+pip install testmind
+```
+
+### For development
+
+```bash
+git clone https://github.com/Slaaayer/testmind
+cd testmind
+uv sync
 ```
 
 ---
@@ -482,17 +500,23 @@ src/testmind/
 
 ---
 
-## Running tests
+## Contributing
+
+Clone the repo and run the test suite:
 
 ```bash
+git clone https://github.com/Slaaayer/testmind
+cd testmind
+uv sync
 uv run pytest              # all 173 tests
-uv run pytest tests/parsers/
-uv run pytest tests/analysis/
-uv run pytest tests/storage/
-uv run pytest tests/reports/
-uv run pytest tests/cli/
 uv run pytest --cov=src/testmind --cov-report=term-missing
 ```
+
+---
+
+## Built with
+
+This tool was built with the help of [Claude](https://claude.ai) — who wrote the tests, questioned every design decision, and occasionally suggested variable names that were suspiciously too good. The bugs are mine. The clean abstractions are probably Claude's.
 
 ---
 
