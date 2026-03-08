@@ -46,4 +46,9 @@ class Store(ABC):
         ...
 
     @abstractmethod
+    def get_report_count(self, project: str) -> int:
+        """Return the total number of stored reports for a project (including deleted)."""
+        ...
+
+    @abstractmethod
     def close(self) -> None: ...
