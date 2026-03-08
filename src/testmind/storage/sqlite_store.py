@@ -164,6 +164,12 @@ class SQLiteStore(Store):
         ).fetchone()
         return row is not None
 
+    def get_report_count(self, project: str) -> int:
+        row = self._conn.execute(
+            "SELECT COUNT(*) AS c FROM reports WHERE project = ?", (project,)
+        ).fetchone()
+        return row["c"]
+
     def close(self) -> None:
         self._conn.close()
 

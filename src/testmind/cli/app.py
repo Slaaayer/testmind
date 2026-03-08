@@ -8,7 +8,8 @@ from testmind.parsers.html_parser import HtmlReportParser
 from testmind.parsers.junit_parser import JUnitParser
 from testmind.reports.formatters import JsonFormatter, TextFormatter
 from testmind.reports.summary import Summarizer
-from testmind.storage.sqlite_store import SQLiteStore
+from testmind.storage.base import Store
+from testmind.storage.factory import open_store
 
 app = typer.Typer(
     name="testmind",
@@ -21,8 +22,13 @@ app = typer.Typer(
 # ---------------------------------------------------------------------------
 
 _DbOpt = Annotated[
-    Optional[Path],
-    typer.Option("--db", envvar="TESTMIND_DB", help="SQLite database path.", show_default=False),
+    Optional[str],
+    typer.Option(
+        "--db",
+        envvar="TESTMIND_DB",
+        help="SQLite file path or PostgreSQL URL (postgresql://...).",
+        show_default=False,
+    ),
 ]
 _FmtOpt = Annotated[
     str,
@@ -34,14 +40,8 @@ _LimitOpt = Annotated[
 ]
 
 
-def _default_db() -> Path:
-    return Path.home() / ".testmind" / "testmind.db"
-
-
-def _open_store(db: Optional[Path]) -> SQLiteStore:
-    path = db or _default_db()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    return SQLiteStore(path)
+def _open_store(db: Optional[str]) -> Store:
+    return open_store(db)
 
 
 def _detect_parser(path: Path) -> JUnitParser | HtmlReportParser:
@@ -196,9 +196,7 @@ def projects(
         for name in names:
             # For deleted projects get_reports returns [] so query directly
             if name in deleted_set:
-                runs_count = store._conn.execute(
-                    "SELECT COUNT(*) as c FROM reports WHERE project = ?", (name,)
-                ).fetchone()["c"]
+                runs_count = store.get_report_count(name)
                 typer.echo(f"{name:<40}  {runs_count:>7}  {'—':<20}  [deleted]")
             else:
                 runs = store.get_reports(name, limit=9999)
