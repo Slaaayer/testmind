@@ -86,6 +86,14 @@ def _parse_testcase(tc: ET.Element, suite_name: str | None) -> TestResult:
         message = None
         stack_trace = None
 
+    # Count retry attempts from pytest-rerunfailures and Surefire-style reruns
+    rerun_count = (
+        len(tc.findall("flakyFailure"))
+        + len(tc.findall("flakyError"))
+        + len(tc.findall("rerunFailure"))
+        + len(tc.findall("rerunError"))
+    )
+
     return TestResult(
         name=name,
         classname=classname,
@@ -94,6 +102,7 @@ def _parse_testcase(tc: ET.Element, suite_name: str | None) -> TestResult:
         duration=duration,
         message=message,
         stack_trace=stack_trace,
+        rerun_count=rerun_count,
     )
 
 

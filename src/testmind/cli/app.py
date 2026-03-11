@@ -1,11 +1,15 @@
-import sys
 from pathlib import Path
 from typing import Annotated, Optional
 
 import typer
 
+from testmind.analysis.flaky import FlakyDetector
+from testmind.analysis.predictor import FailurePredictor
+from testmind.analysis.regression import RegressionDetector
+from testmind.analysis.stability import StabilityAnalyzer
 from testmind.parsers.html_parser import HtmlReportParser
 from testmind.parsers.junit_parser import JUnitParser
+from testmind.reports.dashboard import render_dashboard
 from testmind.reports.formatters import JsonFormatter, TextFormatter
 from testmind.reports.summary import Summarizer
 from testmind.storage.base import Store
@@ -15,6 +19,8 @@ app = typer.Typer(
     name="testmind",
     help="TestMind — ingest test reports, detect patterns, predict failures.",
     add_completion=False,
+    no_args_is_help=True,
+
 )
 
 # ---------------------------------------------------------------------------
@@ -124,6 +130,19 @@ def ingest(
             # Every file failed — nothing useful in the store
             raise typer.Exit(1)
 
+        # If the project is soft-deleted all stored reports are invisible to the
+        # analyser.  Re-ingesting duplicates into a deleted project is a common
+        # mistake after a "bad first run" — give an actionable error.
+        active = store.list_projects(include_deleted=False)
+        if project not in active:
+            _err(
+                f"Project '{project}' is soft-deleted and already has stored data.\n"
+                f"To start fresh, permanently remove it first:\n"
+                f"  testmind delete --hard {project}\n"
+                f"Then re-run ingest."
+            )
+            raise typer.Exit(1)
+
         summarizer = Summarizer(history_limit=limit)
         summary = summarizer.summarize(project, store)
 
@@ -213,22 +232,31 @@ def projects(
 
 @app.command()
 def delete(
-    project: Annotated[str, typer.Argument(help="Project name to soft-delete.")],
+    project: Annotated[str, typer.Argument(help="Project name to delete.")],
+    hard: Annotated[bool, typer.Option("--hard", help="Permanently delete all data (cannot be undone).")] = False,
     db: _DbOpt = None,
 ) -> None:
-    """Soft-delete a project (hidden from listings and analysis, data preserved)."""
+    """Soft-delete a project (hidden from listings and analysis, data preserved).
+
+    Use --hard to permanently remove all reports and test results for the project.
+    """
     store = _open_store(db)
     try:
-        active = store.list_projects(include_deleted=False)
-        if project not in active:
-            all_projects = store.list_projects(include_deleted=True)
-            if project in all_projects:
-                _err(f"Project '{project}' is already deleted.")
-            else:
-                _err(f"Project '{project}' not found.")
+        all_projects = store.list_projects(include_deleted=True)
+        if project not in all_projects:
+            _err(f"Project '{project}' not found.")
             raise typer.Exit(1)
-        store.delete_project(project)
-        typer.echo(f"Project '{project}' has been soft-deleted. Use 'restore' to recover it.")
+
+        if hard:
+            store.hard_delete_project(project)
+            typer.echo(f"Project '{project}' and all its data have been permanently deleted.")
+        else:
+            active = store.list_projects(include_deleted=False)
+            if project not in active:
+                _err(f"Project '{project}' is already deleted.")
+                raise typer.Exit(1)
+            store.delete_project(project)
+            typer.echo(f"Project '{project}' has been soft-deleted. Use 'restore' to recover it.")
     finally:
         store.close()
 
@@ -251,6 +279,163 @@ def restore(
             raise typer.Exit(1)
         store.restore_project(project)
         typer.echo(f"Project '{project}' has been restored.")
+    finally:
+        store.close()
+
+
+# ---------------------------------------------------------------------------
+# history
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# tests / test
+# ---------------------------------------------------------------------------
+
+_STATUS_ICON: dict[str, str] = {
+    "PASSED":  "✓",
+    "FAILED":  "✗",
+    "ERROR":   "!",
+    "SKIPPED": "⊘",
+    "UNKNOWN": "?",
+}
+
+
+@app.command(name="tests")
+def list_tests(
+    project: Annotated[str, typer.Argument(help="Project name.")],
+    db: _DbOpt = None,
+) -> None:
+    """List all tests in a project with their latest status and pass rate."""
+    store = _open_store(db)
+    try:
+        rows = store.list_tests(project)
+        if not rows:
+            _err(f"No tests found for project '{project}'.")
+            raise typer.Exit(1)
+
+        typer.echo(f"Tests in '{project}'  ({len(rows)} test(s))\n")
+        header = f"{'Test':<60}  {'St':>2}  {'Runs':>5}  {'Pass rate':>9}  {'Reruns':>6}"
+        typer.echo(header)
+        typer.echo("─" * len(header))
+        for name, latest_status, run_count, pass_count, total_reruns in rows:
+            icon = _STATUS_ICON.get(latest_status, "?")
+            pass_rate = pass_count / run_count if run_count else 0.0
+            rerun_marker = f"{total_reruns:>6}" if total_reruns else "      "
+            typer.echo(
+                f"{name[:60]:<60}  {icon:>2}  {run_count:>5}  {pass_rate:>8.0%}  {rerun_marker}"
+            )
+    finally:
+        store.close()
+
+
+@app.command(name="test")
+def show_test(
+    project: Annotated[str, typer.Argument(help="Project name.")],
+    test_name: Annotated[str, typer.Argument(help="Full test name (as shown by 'tests' command).")],
+    db: _DbOpt = None,
+    limit: _LimitOpt = 30,
+) -> None:
+    """Show analysis and recent history for a single test."""
+    store = _open_store(db)
+    try:
+        history = store.get_test_history(project, test_name, limit=limit)
+        if not history:
+            _err(f"No history found for test '{test_name}' in project '{project}'.")
+            raise typer.Exit(1)
+
+        flaky  = FlakyDetector().analyze(test_name, history)
+        regr   = RegressionDetector().analyze(test_name, history)
+        stab   = StabilityAnalyzer().analyze(test_name, history)
+        pred   = FailurePredictor().analyze(test_name, history)
+
+        typer.echo(f"Test:    {test_name}")
+        typer.echo(f"Project: {project}\n")
+
+        typer.echo("Analysis")
+        typer.echo("─" * 40)
+
+        # Stability
+        if stab.insufficient_data:
+            typer.echo(f"  Stability:    — (need ≥3 runs, have {stab.run_count})")
+        else:
+            typer.echo(
+                f"  Stability:    {stab.score:.1f}/100"
+                f"  (pass rate {stab.pass_rate:.0%}, flip rate {stab.flip_rate:.0%})"
+            )
+
+        # Flaky
+        if flaky.insufficient_data:
+            typer.echo("  Flaky:        — (need ≥5 runs)")
+        else:
+            flag = "YES" if flaky.is_flaky else "No"
+            typer.echo(f"  Flaky:        {flag}")
+
+        # Regression
+        if regr.insufficient_data:
+            typer.echo("  Regression:   — (need ≥6 runs)")
+        else:
+            flag = "YES" if regr.is_regression else "No"
+            typer.echo(f"  Regression:   {flag}")
+
+        # Prediction
+        if pred.insufficient_data:
+            typer.echo("  Prediction:   — (need ≥3 runs)")
+        else:
+            typer.echo(
+                f"  Prediction:   {pred.failure_probability:.0%} failure probability"
+                f"  (trend: {pred.trend}, confidence: {pred.confidence:.0%})"
+            )
+
+        total_reruns = sum(r.rerun_count for _, r in history)
+        if total_reruns:
+            typer.echo(f"  Reruns:       {total_reruns} retry attempt(s) across all runs")
+
+        typer.echo(f"\nRecent runs  (last {len(history)})")
+        typer.echo("─" * 40)
+        hdr = f"  {'Timestamp':<22}  {'Status':<8}  {'Duration':>9}  {'Reruns':>6}"
+        typer.echo(hdr)
+        for ts, result in history:
+            icon = _STATUS_ICON.get(result.status.value, "?")
+            rerun_str = f"{result.rerun_count:>6}" if result.rerun_count else "      "
+            typer.echo(
+                f"  {ts.strftime('%Y-%m-%d %H:%M:%S'):<22}"
+                f"  {icon} {result.status.value:<6}"
+                f"  {result.duration:>8.2f}s"
+                f"  {rerun_str}"
+            )
+    finally:
+        store.close()
+
+
+# ---------------------------------------------------------------------------
+# dashboard
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def dashboard(
+    projects: Annotated[
+        Optional[list[str]],
+        typer.Option("--project", "-p", help="Project(s) to include. Defaults to all active projects."),
+    ] = None,
+    output: Annotated[
+        Path,
+        typer.Option("--output", "-o", help="Output HTML file path."),
+    ] = Path("testmind-dashboard.html"),
+    db: _DbOpt = None,
+) -> None:
+    """Generate a self-contained HTML dashboard for one or more projects."""
+    store = _open_store(db)
+    try:
+        selected = list(projects) if projects else store.list_projects(include_deleted=False)
+        if not selected:
+            _err("No active projects found.")
+            raise typer.Exit(1)
+
+        html = render_dashboard(store, selected)
+        output.write_text(html, encoding="utf-8")
+        typer.echo(f"Dashboard written to {output}  ({len(selected)} project(s))")
     finally:
         store.close()
 

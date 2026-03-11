@@ -28,9 +28,11 @@ _DDL = [
         status      TEXT NOT NULL,
         duration    FLOAT NOT NULL,
         message     TEXT,
-        stack_trace TEXT
+        stack_trace TEXT,
+        rerun_count INTEGER NOT NULL DEFAULT 0
     )
     """,
+    "ALTER TABLE test_results ADD COLUMN IF NOT EXISTS rerun_count INTEGER NOT NULL DEFAULT 0",
     """
     CREATE TABLE IF NOT EXISTS deleted_projects (
         project    TEXT PRIMARY KEY,
@@ -85,8 +87,8 @@ class PostgresStore(Store):
             )
             cur.executemany(
                 """
-                INSERT INTO test_results (report_id, name, classname, suite, status, duration, message, stack_trace)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                INSERT INTO test_results (report_id, name, classname, suite, status, duration, message, stack_trace, rerun_count)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 [
                     (
@@ -98,6 +100,7 @@ class PostgresStore(Store):
                         t.duration,
                         t.message,
                         t.stack_trace,
+                        t.rerun_count,
                     )
                     for t in report.tests
                 ],
@@ -170,6 +173,46 @@ class PostgresStore(Store):
     def restore_project(self, name: str) -> None:
         with self._transaction() as cur:
             cur.execute("DELETE FROM deleted_projects WHERE project = %s", (name,))
+
+    def hard_delete_project(self, name: str) -> None:
+        with self._transaction() as cur:
+            # ON DELETE CASCADE in test_results handles child rows automatically
+            cur.execute("DELETE FROM reports WHERE project = %s", (name,))
+            cur.execute("DELETE FROM deleted_projects WHERE project = %s", (name,))
+
+    def list_tests(self, project: str) -> list[tuple[str, str, int, int, int]]:
+        with self._conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    tr.name,
+                    COUNT(*) AS run_count,
+                    SUM(CASE WHEN tr.status = 'PASSED' THEN 1 ELSE 0 END) AS pass_count,
+                    SUM(tr.rerun_count) AS total_reruns,
+                    (
+                        SELECT tr2.status
+                        FROM test_results tr2
+                        JOIN reports r2 ON r2.id = tr2.report_id
+                        WHERE tr2.name = tr.name
+                          AND r2.project = r.project
+                          AND r2.project NOT IN (SELECT project FROM deleted_projects)
+                        ORDER BY r2.timestamp DESC
+                        LIMIT 1
+                    ) AS latest_status
+                FROM test_results tr
+                JOIN reports r ON r.id = tr.report_id
+                WHERE r.project = %s
+                  AND r.project NOT IN (SELECT project FROM deleted_projects)
+                GROUP BY tr.name
+                ORDER BY tr.name
+                """,
+                (project,),
+            )
+            rows = cur.fetchall()
+        return [
+            (row["name"], row["latest_status"] or "UNKNOWN", row["run_count"], row["pass_count"], row["total_reruns"] or 0)
+            for row in rows
+        ]
 
     def report_exists(self, report_id: str) -> bool:
         with self._conn.cursor() as cur:
@@ -245,6 +288,7 @@ def _row_to_test_result(row: dict) -> TestResult:
         duration=row["duration"],
         message=row["message"],
         stack_trace=row["stack_trace"],
+        rerun_count=row.get("rerun_count") or 0,
     )
 
 

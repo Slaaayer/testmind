@@ -41,6 +41,22 @@ class Store(ABC):
         ...
 
     @abstractmethod
+    def hard_delete_project(self, name: str) -> None:
+        """Permanently delete all reports and test results for a project."""
+        ...
+
+    @abstractmethod
+    def list_tests(
+        self, project: str
+    ) -> list[tuple[str, str, int, int, int]]:
+        """Return per-test summary rows for a project.
+
+        Each tuple is (test_name, latest_status, total_runs, pass_count, total_reruns).
+        Rows are ordered by test_name.
+        """
+        ...
+
+    @abstractmethod
     def report_exists(self, report_id: str) -> bool:
         """Return True if a report with this id is already stored."""
         ...

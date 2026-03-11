@@ -22,6 +22,7 @@ class TestResult(BaseModel):
     duration: float
     message: str | None = None
     stack_trace: str | None = None
+    rerun_count: int = 0  # number of retry attempts before this final outcome
 
 
 class TestReport(BaseModel):

@@ -78,8 +78,8 @@ class SQLiteStore(Store):
             )
             self._conn.executemany(
                 """
-                INSERT INTO test_results (report_id, name, classname, suite, status, duration, message, stack_trace)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO test_results (report_id, name, classname, suite, status, duration, message, stack_trace, rerun_count)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     (
@@ -91,6 +91,7 @@ class SQLiteStore(Store):
                         t.duration,
                         t.message,
                         t.stack_trace,
+                        t.rerun_count,
                     )
                     for t in report.tests
                 ],
@@ -158,6 +159,44 @@ class SQLiteStore(Store):
                 "DELETE FROM deleted_projects WHERE project = ?", (name,)
             )
 
+    def hard_delete_project(self, name: str) -> None:
+        with self._transaction():
+            # ON DELETE CASCADE in test_results handles child rows automatically
+            self._conn.execute("DELETE FROM reports WHERE project = ?", (name,))
+            self._conn.execute("DELETE FROM deleted_projects WHERE project = ?", (name,))
+
+    def list_tests(self, project: str) -> list[tuple[str, str, int, int, int]]:
+        rows = self._conn.execute(
+            """
+            SELECT
+                tr.name,
+                COUNT(*) AS run_count,
+                SUM(CASE WHEN tr.status = 'PASSED' THEN 1 ELSE 0 END) AS pass_count,
+                SUM(tr.rerun_count) AS total_reruns,
+                (
+                    SELECT tr2.status
+                    FROM test_results tr2
+                    JOIN reports r2 ON r2.id = tr2.report_id
+                    WHERE tr2.name = tr.name
+                      AND r2.project = r.project
+                      AND r2.project NOT IN (SELECT project FROM deleted_projects)
+                    ORDER BY r2.timestamp DESC
+                    LIMIT 1
+                ) AS latest_status
+            FROM test_results tr
+            JOIN reports r ON r.id = tr.report_id
+            WHERE r.project = ?
+              AND r.project NOT IN (SELECT project FROM deleted_projects)
+            GROUP BY tr.name
+            ORDER BY tr.name
+            """,
+            (project,),
+        ).fetchall()
+        return [
+            (row["name"], row["latest_status"] or "UNKNOWN", row["run_count"], row["pass_count"], row["total_reruns"] or 0)
+            for row in rows
+        ]
+
     def report_exists(self, report_id: str) -> bool:
         row = self._conn.execute(
             "SELECT 1 FROM reports WHERE id = ?", (report_id,)
@@ -180,6 +219,14 @@ class SQLiteStore(Store):
     def _migrate(self) -> None:
         self._conn.executescript(_DDL)
         self._conn.commit()
+        # Additive column migrations — safe on existing DBs
+        try:
+            self._conn.execute(
+                "ALTER TABLE test_results ADD COLUMN rerun_count INTEGER NOT NULL DEFAULT 0"
+            )
+            self._conn.commit()
+        except Exception:
+            pass  # column already exists
 
     @contextmanager
     def _transaction(self):
@@ -225,6 +272,7 @@ def _row_to_test_result(row: sqlite3.Row) -> TestResult:
         duration=row["duration"],
         message=row["message"],
         stack_trace=row["stack_trace"],
+        rerun_count=row["rerun_count"] if row["rerun_count"] is not None else 0,
     )
 
 
